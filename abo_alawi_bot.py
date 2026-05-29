@@ -21,6 +21,11 @@
   CHECK_INTERVAL       ثواني بين كل فحص                     (افتراضي: 300)
   THRESHOLD RSI_LENGTH STOP_LOSS_PERCENT TP_TARGETS USE_LONG_FILTER USE_SHORT_FILTER
   CAPITAL QUOTE TIMEZONE CMC_API_KEY CMC_CONVERT
+
+▼ فلتر نسبة الفوليوم (Volume Ratio):
+  VOLUME_RATIO_MIN     أقل نسبة (فوليوم الشمعة ÷ المتوسط)   (افتراضي: 0 = تعطيل)
+  VOLUME_RATIO_MAX     أعلى نسبة                            (افتراضي: 0 = تعطيل)
+  VOLUME_RATIO_LENGTH  عدد الشموع لحساب متوسط الفوليوم       (افتراضي: 20)
 """
 
 import os
@@ -82,6 +87,13 @@ MARKET_CAP_MAX = env_float("MARKET_CAP_MAX", 0.0)
 # فلتر حجم فوليوم الشمعة الحالية بقيمة عملة التسعير (QUOTE) — 0 = تعطيل الحد
 VOLUME_MIN = env_float("VOLUME_MIN", 0.0)
 VOLUME_MAX = env_float("VOLUME_MAX", 0.0)
+
+# فلتر نسبة الفوليوم (Volume Ratio) = فوليوم الشمعة الحالية ÷ متوسط فوليوم آخر N شمعة
+#   مفيد لاكتشاف "انفجار" الفوليوم وتأكيد الإشارة. 0 = تعطيل الحد.
+#   مثال: VOLUME_RATIO_MIN=2  → لا تُطلق الإشارة إلا إذا كان الفوليوم ضعف المتوسط أو أكثر.
+VOLUME_RATIO_MIN    = env_float("VOLUME_RATIO_MIN", 0.0)
+VOLUME_RATIO_MAX    = env_float("VOLUME_RATIO_MAX", 0.0)
+VOLUME_RATIO_LENGTH = env_int("VOLUME_RATIO_LENGTH", 20)
 
 # فلتر Stochastic RSI — الإشارة لا تُطلق إلا إذا كان %K بين الحدّين
 STOCH_RSI_MIN = env_float("STOCH_RSI_MIN", 0.0)
@@ -290,6 +302,33 @@ def volume_in_range(v):
     return True
 
 
+def compute_volume_ratio(volumes, length):
+    """نسبة فوليوم الشمعة الحالية إلى متوسط فوليوم آخر length شمعة (باستثناء الحالية).
+    يرجّع None إذا لم تتوفر بيانات كافية أو كان المتوسط صفرًا."""
+    if not volumes or length <= 0 or len(volumes) < length + 1:
+        return None
+    current = volumes[-1]
+    window = volumes[-length - 1:-1]
+    avg = (sum(window) / len(window)) if window else 0.0
+    if avg <= 0:
+        return None
+    return current / avg
+
+
+def volume_ratio_in_range(r):
+    """هل نسبة الفوليوم ضمن الحدّين؟ (0 = تعطيل الحد).
+    عند غياب البيانات (None) لا نمنع الإشارة."""
+    if VOLUME_RATIO_MIN <= 0 and VOLUME_RATIO_MAX <= 0:
+        return True
+    if r is None:
+        return True
+    if VOLUME_RATIO_MIN > 0 and r < VOLUME_RATIO_MIN:
+        return False
+    if VOLUME_RATIO_MAX > 0 and r > VOLUME_RATIO_MAX:
+        return False
+    return True
+
+
 def get_market_data(exchanges, symbol, timeframe, rsi_length, prefer=None):
     ordered = exchanges
     if prefer:
@@ -298,13 +337,14 @@ def get_market_data(exchanges, symbol, timeframe, rsi_length, prefer=None):
         try:
             ohlcv = ex.fetch_ohlcv(symbol, timeframe=timeframe, limit=max(200, rsi_length + 5))
             closes = [c[4] for c in ohlcv]
+            volumes = [c[5] for c in ohlcv if len(c) > 5]
             daily = ex.fetch_ohlcv(symbol, timeframe="1d", limit=3)
             dcloses = [c[4] for c in daily]
             if len(closes) >= rsi_length + 1 and len(dcloses) >= 2 and dcloses[-2] != 0:
                 y, t = dcloses[-2], dcloses[-1]
                 vol = ohlcv[-1][5] if (ohlcv and len(ohlcv[-1]) > 5) else None
-                return {"closes": closes, "diff": (t - y) / y, "yesterday": y,
-                        "today": t, "eid": eid, "ex": ex, "volume": vol}
+                return {"closes": closes, "volumes": volumes, "diff": (t - y) / y,
+                        "yesterday": y, "today": t, "eid": eid, "ex": ex, "volume": vol}
         except Exception:
             continue
     return None
@@ -458,7 +498,7 @@ def trade_result(trade):
 
 # ====================== الرسائل ======================
 def send_signal(symbol, trade, rsi, diff, yesterday, today, ticker24h, eid, cmc, stoch=None,
-                vol_base=None, vol_quote=None):
+                vol_base=None, vol_quote=None, vol_ratio=None):
     price, stop = trade["entry"], trade["stop"]
     emoji, name = ("🟢", "شراء (Long)") if trade["side"] == "long" else ("🔴", "بيع (Short)")
     rr = (max(TP_TARGETS) / STOP_LOSS_PERCENT) if (STOP_LOSS_PERCENT and TP_TARGETS) else 0
@@ -487,6 +527,9 @@ def send_signal(symbol, trade, rsi, diff, yesterday, today, ticker24h, eid, cmc,
           "• RSI: {:.2f} ({})".format(rsi, rsi_state(rsi))]
     if stoch:
         p.append("• Stoch RSI: %K {:.1f} / %D {:.1f}".format(stoch[0], stoch[1]))
+    if vol_ratio is not None:
+        p.append("• نسبة الفوليوم: <b>{:.2f}×</b> المتوسط ({} شمعة)".format(
+            vol_ratio, VOLUME_RATIO_LENGTH))
     p += ["• الاتجاه اليومي: {}".format(trend),
           "• تغيّر اليوم: {:+.2f}% (أمس <code>{:.6g}</code> ← اليوم <code>{:.6g}</code>)".format(
               diff * 100, yesterday, today)]
@@ -708,6 +751,10 @@ def main():
                 price, eid, ex = closes[-1], data["eid"], data["ex"]
                 vol_base = data.get("volume")
                 vol_quote = (vol_base * price) if vol_base is not None else None
+                # نسبة الفوليوم — نستخدم نفس سلسلة الشموع المغلقة المعتمدة في RSI
+                vols = data.get("volumes") or []
+                vr_series = vols[:-1] if (USE_CLOSED_CANDLE_ONLY and len(vols) > 1) else vols
+                vol_ratio = compute_volume_ratio(vr_series, VOLUME_RATIO_LENGTH)
 
                 if diff > THRESHOLD:
                     st["buying"] = True
@@ -722,13 +769,15 @@ def main():
                 cooled = (time.time() - st.get("last_sig_ts", 0)) >= SIGNAL_COOLDOWN_HOURS * 3600
                 no_open = not (st["trade"] and st["trade"]["open"])
                 if (signal and signal != st["last_signal"] and cooled and no_open
-                        and stoch_in_range(stoch_k) and volume_in_range(vol_quote)):
+                        and stoch_in_range(stoch_k) and volume_in_range(vol_quote)
+                        and volume_ratio_in_range(vol_ratio)):
                     cmc = get_cmc_cached(symbol.split("/")[0], st)
                     mc = cmc.get("market_cap") if cmc else None
                     if market_cap_in_range(mc):
                         st["trade"] = build_trade(signal, price)
                         send_signal(symbol, st["trade"], rsi, diff, yesterday, today,
-                                    fetch_24h(ex, symbol), eid, cmc, stoch, vol_base, vol_quote)
+                                    fetch_24h(ex, symbol), eid, cmc, stoch, vol_base, vol_quote,
+                                    vol_ratio)
                         st["last_signal"] = signal
                         st["last_sig_ts"] = time.time()
 
