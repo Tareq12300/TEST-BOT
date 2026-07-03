@@ -59,7 +59,7 @@ SIGNAL_COOLDOWN_HOURS = env_float("SIGNAL_COOLDOWN_HOURS", 6)
 MAX_SYMBOLS_PER_EXCHANGE = env_int("MAX_SYMBOLS_PER_EXCHANGE", 0)
 MAX_CONCURRENT_REQUESTS = env_int("MAX_CONCURRENT_REQUESTS", 12)
 REQUEST_TIMEOUT = env_int("REQUEST_TIMEOUT", 30)
-MIN_DAILY_VOLUME_USDT = env_float("MIN_DAILY_VOLUME_USDT", 0)
+MIN_CANDLE_VOLUME_USDT = env_float("MIN_CANDLE_VOLUME_USDT", 100000)
 
 STOCH_RSI_PERIOD = env_int("STOCH_RSI_PERIOD", 14)
 STOCH_K = env_int("STOCH_K", 3)
@@ -184,8 +184,13 @@ def is_bullish_signal(candles: List[List[float]]) -> Optional[Dict[str, float]]:
     if len(candles) < max(CANDLE_LIMIT // 2, 80):
         return None
     closes = np.array([float(c[4]) for c in candles], dtype=float)
+    volumes = np.array([float(c[5]) for c in candles], dtype=float)
     idx = last_closed_index(candles)
     if idx < 5:
+        return None
+
+    candle_volume_usdt = float(volumes[idx] * closes[idx])
+    if candle_volume_usdt < MIN_CANDLE_VOLUME_USDT:
         return None
 
     k, d = stoch_rsi(closes, STOCH_RSI_PERIOD, STOCH_K, STOCH_D)
@@ -209,6 +214,7 @@ def is_bullish_signal(candles: List[List[float]]) -> Optional[Dict[str, float]]:
     if stoch_ok and macd_ok:
         return {
             "price": closes[idx],
+            "candle_volume_usdt": candle_volume_usdt,
             "stoch_k": float(k[idx]),
             "stoch_d": float(d[idx]),
             "prev_stoch_k": float(k[idx - 1]),
@@ -249,11 +255,6 @@ class BotRunner:
     async def get_symbols(self, exchange) -> List[str]:
         markets = await exchange.load_markets()
         symbols = []
-        tickers = {}
-        try:
-            tickers = await exchange.fetch_tickers()
-        except Exception:
-            tickers = {}
         for symbol, market in markets.items():
             if not market.get("active", True):
                 continue
@@ -266,14 +267,6 @@ class BotRunner:
                 continue
             if ":" in symbol:
                 continue
-            if MIN_DAILY_VOLUME_USDT > 0:
-                ticker = tickers.get(symbol) or {}
-                qv = ticker.get("quoteVolume") or 0
-                try:
-                    if float(qv or 0) < MIN_DAILY_VOLUME_USDT:
-                        continue
-                except Exception:
-                    continue
             symbols.append(symbol)
         symbols = sorted(set(symbols))
         if MAX_SYMBOLS_PER_EXCHANGE > 0:
@@ -303,6 +296,7 @@ class BotRunner:
 الفريم: {TIMEFRAME}
 
 السعر: {r['price']:.12g}
+فوليوم شمعة 4H: ${r['candle_volume_usdt']:,.0f}
 
 Stochastic RSI:
 K: {r['stoch_k']:.2f}
@@ -363,7 +357,7 @@ Prev Hist: {r['prev_hist']:.8f}
     async def run(self):
         if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
             raise RuntimeError("Missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID")
-        await self.send("✅ Bot started: Stochastic RSI + MACD only, 4H, no pandas")
+        await self.send("✅ Bot started: Stochastic RSI + MACD + 4H candle volume, no pandas")
         while True:
             try:
                 await self.scan_once()
