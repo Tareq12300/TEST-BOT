@@ -226,9 +226,8 @@ def macd_tv(closes: np.ndarray, fast: int, slow: int, signal: int) -> Tuple[np.n
 
 
 def last_closed_index(candles: List[List[float]]) -> int:
-    # Most exchanges return the current in-progress candle as the last candle.
-    # Use the previous candle to match closed TradingView candles.
-    return len(candles) - 2 if len(candles) >= 2 else len(candles) - 1
+    # Use latest candle to match the current TradingView values.
+    return len(candles) - 1
 
 
 def is_bullish_signal(candles: List[List[float]]) -> Optional[Dict[str, float]]:
