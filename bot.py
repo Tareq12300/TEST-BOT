@@ -71,6 +71,14 @@ REQUEST_TIMEOUT = env_int("REQUEST_TIMEOUT", 30)
 MIN_CANDLE_VOLUME_USDT = env_float("MIN_CANDLE_VOLUME_USDT", 100000)
 MIN_VOLUME_INCREASE = env_float("MIN_VOLUME_INCREASE", 2.0)
 
+ENABLE_TARGETS = env_bool("ENABLE_TARGETS", True)
+TP1 = env_float("TP1", 10)
+TP2 = env_float("TP2", 20)
+TP3 = env_float("TP3", 30)
+TP4 = env_float("TP4", 40)
+TP5 = env_float("TP5", 50)
+STOP_LOSS = env_float("STOP_LOSS", 5)
+
 
 STOCH_RSI_PERIOD = env_int("STOCH_RSI_PERIOD", 14)
 STOCH_K = env_int("STOCH_K", 3)
@@ -213,6 +221,39 @@ def is_bullish_signal(candles: List[List[float]]) -> Optional[Dict[str, float]]:
     }
 
 
+def format_price(value: float) -> str:
+    if value >= 1:
+        return f"{value:.6f}"
+    if value >= 0.01:
+        return f"{value:.8f}"
+    return f"{value:.12g}"
+
+
+def build_targets_block(entry_price: float) -> str:
+    if not ENABLE_TARGETS:
+        return ""
+
+    targets = [
+        ("TP1", TP1),
+        ("TP2", TP2),
+        ("TP3", TP3),
+        ("TP4", TP4),
+        ("TP5", TP5),
+    ]
+
+    lines = ["", "🎯 الأهداف:"]
+    for label, percent in targets:
+        target_price = entry_price * (1 + percent / 100)
+        lines.append(f"{label} (+{percent:.2f}%): {format_price(target_price)}")
+
+    stop_price = entry_price * (1 - STOP_LOSS / 100)
+    lines.append("")
+    lines.append(f"🛑 وقف الخسارة (-{STOP_LOSS:.2f}%): {format_price(stop_price)}")
+
+    return "\n".join(lines)
+
+
+
 class BotRunner:
     def __init__(self):
         self.telegram = Bot(token=TELEGRAM_BOT_TOKEN)
@@ -314,6 +355,8 @@ Signal: {r['macd_signal']:.8f}
 Histogram: {r['hist']:.8f}
 Prev Hist: {r['prev_hist']:.8f}
 ✅ MACD إيجابي والهستوجرام يتحسن
+
+{build_targets_block(r['price'])}
 
 شمعة الإشارة: {candle_time}
 
