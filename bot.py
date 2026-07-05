@@ -69,7 +69,8 @@ MAX_CONCURRENT_REQUESTS = env_int("MAX_CONCURRENT_REQUESTS", 12)
 REQUEST_TIMEOUT = env_int("REQUEST_TIMEOUT", 30)
 
 MIN_CANDLE_VOLUME_USDT = env_float("MIN_CANDLE_VOLUME_USDT", 100000)
-REQUIRE_VOLUME_INCREASE = env_bool("REQUIRE_VOLUME_INCREASE", False)
+MIN_VOLUME_INCREASE = env_float("MIN_VOLUME_INCREASE", 2.0)
+
 
 STOCH_RSI_PERIOD = env_int("STOCH_RSI_PERIOD", 14)
 STOCH_K = env_int("STOCH_K", 3)
@@ -166,7 +167,11 @@ def is_bullish_signal(candles: List[List[float]]) -> Optional[Dict[str, float]]:
     if current_volume_usdt < MIN_CANDLE_VOLUME_USDT:
         return None
 
-    if REQUIRE_VOLUME_INCREASE and current_volume_usdt <= previous_volume_usdt:
+    volume_ratio = current_volume_usdt / previous_volume_usdt if previous_volume_usdt > 0 else 0.0
+
+    # لا ترسل تنبيه إلا إذا كان فوليوم الشمعة الحالية أكبر من السابقة بحد أدنى محدد.
+    # الافتراضي 2.0x ويمكن تغييره من Railway عبر MIN_VOLUME_INCREASE.
+    if volume_ratio < MIN_VOLUME_INCREASE:
         return None
 
     needed_values = [
@@ -189,8 +194,6 @@ def is_bullish_signal(candles: List[List[float]]) -> Optional[Dict[str, float]]:
 
     if not (stoch_ok and macd_ok):
         return None
-
-    volume_ratio = current_volume_usdt / previous_volume_usdt if previous_volume_usdt > 0 else 0.0
 
     return {
         "price": float(row["close"]),
@@ -290,11 +293,14 @@ ${r['current_candle_volume_usdt']:,.0f}
 💰 فوليوم الشمعة السابقة:
 ${r['previous_candle_volume_usdt']:,.0f}
 
-📈 زيادة الفوليوم:
+🚀 زيادة الفوليوم:
 {r['volume_increase_ratio']:.2f}x
 
-🎯 الحد الأدنى المطلوب:
+🎯 الحد الأدنى للفوليوم:
 ${MIN_CANDLE_VOLUME_USDT:,.0f}
+
+🎯 أقل زيادة مطلوبة:
+{MIN_VOLUME_INCREASE:.2f}x
 
 Stochastic RSI — ta library:
 K: {r['stoch_k']:.2f}
@@ -355,7 +361,7 @@ Prev Hist: {r['prev_hist']:.8f}
     async def run(self):
         if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
             raise RuntimeError("Missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID")
-        await self.send("✅ Bot started: ta Stoch RSI + MACD + 4H candle volume")
+        await self.send("✅ Bot started: ta Stoch RSI + MACD + 4H candle volume + min volume increase")
         while True:
             try:
                 await self.scan_once()
